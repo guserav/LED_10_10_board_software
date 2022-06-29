@@ -1,6 +1,7 @@
+
 #include <avr/io.h>
 #include <avr/interrupt.h>
-#define F_CPU 1000000
+#define F_CPU 12000000
 #include <util/delay.h>
 #include <stdint.h>
 #include <avr/eeprom.h>
@@ -23,6 +24,7 @@
 #define PWM_3 OCR1A
 #define PWM_4 OCR2A
 #define RESOLUTION 0x03ff
+#define B(SHIFT) (1 << SHIFT)
 
 void out_init() {
     // Write on Pin PB0
@@ -44,21 +46,33 @@ void out_init() {
 }
 
 void pwm_init() {
-    TCCR1B = 0b001; // No prescaling and use complete Range of CLOCK
-    TCCR2B = 0b001; // No prescaling and use complete Range of CLOCK
-    TCCR1A = 3; // Fast_PWM 10 bit
-    TCCR1B |= 1 << 3;
-    TCCR2A = 3; // Fast_PWM 10 bit
-    TCCR2B |= 1 << 3;
+    TCCR1B = B(CS10); // No prescaling and use complete Range of CLOCK
+    TCCR2B = B(CS20); // No prescaling and use complete Range of CLOCK
+    TCCR1A = B(WGM10) | B(WGM11); // Fast_PWM 10 bit
+    TCCR1B |= B(WGM12);
+    TCCR2A = B(WGM20) | B(WGM21); // Fast_PWM 10 bit
+    TCCR2B |= B(WGM22);
 
-    TOCPMSA0 = 0b00100101;
-    TOCPMSA1 = 0b10000000;
-    TOCPMSA0 |= (1 << 1);
+    TOCPMSA0 = B(TOCC0S0) | B(TOCC1S0) | B(TOCC2S1);
+    TOCPMSA1 = B(TOCC7S1);
 
-    TOCPMCOE = 0b10000111; // Enable outputs for desired pins;
+    TOCPMCOE = B(TOCC0OE) | B(TOCC1OE) | B(TOCC2OE) | B(TOCC7OE); // Enable outputs for desired pins;
 
-    TCCR1A |= 0b10100000; // Set pin low on compare match and reset on BOTTOM
-    TCCR2A |= 0b10100000; // Set pin low on compare match and reset on BOTTOM
+    TCCR1A |= B(COM1A1) | B(COM1B1);
+    TCCR2A |= B(COM2A1) | B(COM2B1);
+}
+
+void uart_init() {
+#define BAUD_RATE 250000
+    PRR &= ~B(PRUSART1);
+    UBRR1H = 0;
+#if 2 != (F_CPU / (16 * BAUD_RATE) - 1)
+#warning CPU frequency doesn't match the expected one
+#endif
+    UBRR1L = 2;
+    // Consider changing U2Xn/U2X1 to 1 would change UBRR value
+    UCSR1B = B(RXEN1);
+    UCSR1C = B(USBS1)|B(UCSZ10)|B(UCSZ11); // 2-stop-bits, 8-bit word size; Implicit No parity, Asynchronous USART, no parity
 }
 
 void adc_init() {
@@ -88,27 +102,52 @@ int16_t readADC(uint8_t channel) {
 int main(void) {
     out_init();
     pwm_init();
+    uart_init();
+    int16_t dmx_frame = 0;
+    uint8_t dmx_lock = 0;
+    uint16_t uart_data = 0;
     uint8_t flip = 0;
-    uint16_t counter = 0;
 
     while (1) {
-        _delay_ms(3000);
-        led_sig_set_A(LED, flip);
-        PWM_1 = counter;
-        PWM_2 = counter;
-        PWM_3 = counter;
-        PWM_4 = counter;
-        if(flip) {
-            counter = 0;
-        } else {
-            counter = 1 << 6;
-
+        led_sig_set_A(LED, 0);
+        if(UCSR1A & B(RXC1)) {
+            if(UCSR1A & B(FE1)) {
+                dmx_lock = 1;
+                dmx_frame = -2;
+                uart_data = UDR1;
+            } else {
+                uart_data = UDR1;
+                uart_data = (uart_data * uart_data) >> 6;
+                if(dmx_lock) {
+                    dmx_frame++;
+                    if(dmx_frame == -1) {
+                        // start code in uart_data
+                    } else {
+                        switch(dmx_frame) {
+                            case 0:
+                                PWM_1 = uart_data;
+                                break;
+                            case 1:
+                                PWM_2 = uart_data;
+                                break;
+                            case 2:
+                                PWM_3 = uart_data;
+                                break;
+                            case 3:
+                                PWM_4 = uart_data;
+                                break;
+                            default:
+                                led_sig_set_A(LED, 1);
+                        }
+                        if(dmx_frame > 512) {
+                            dmx_lock = 0; // To many data packets in transmission
+                        }
+                    }
+                } else {
+                    dmx_frame = -3;
+                }
+            }
         }
-        //counter += 1 << 5;
-        //if(counter > RESOLUTION) {
-            //counter = 0;
-        //}
-        flip = !flip;
     }
     return 0;
 }
