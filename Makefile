@@ -65,7 +65,7 @@ program-eep: $(EEP)
 	avrdude -c avrispmkII -P usb -p t841 -U eeprom:w:$<
 
 fuse:
-	avrdude -c avrispmkII -P usb -p t841 -U lfuse:w:0x0f:m
+	avrdude -c avrispmkII -P usb -p t841 -U lfuse:w:0x8f:m
 
 reset :
 	avrdude -c avrispmkII -P usb -p t841
