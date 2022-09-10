@@ -6,6 +6,8 @@
 #include <stdint.h>
 #include <avr/eeprom.h>
 
+#include "dip.h"
+
 // Read from ADC2: PB4; ADC3: PB3
 // LED is on MOSI Pin: PB0
 // Vmid = 4V / (10 + 1.6 ) * 1.6    ~0.552

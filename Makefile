@@ -31,7 +31,7 @@ OBJ  = $(COBJ) $(SOBJ)
 MCFLAGS = -mmcu=$(MCU)
 OPTIMIZE=-O3 -ffunction-sections
 DEBUG   = -g3
-CFLAGS  =$(MCFLAGS) $(DEBUG)  $(OPTIMIZE) -Wall -MP -MMD
+CFLAGS  =$(MCFLAGS) $(DEBUG)  $(OPTIMIZE) -Wall -MP -MMD -Warray-bounds=0
 
 ASFLAGS = $(DEBUG)
 
@@ -43,7 +43,7 @@ all: $(BIN)
 $(EXECUTABLE): $(OBJ) $(LDSCRIPT)
 	$(CC) $(MCFLAGS) $(sort $(OBJ)) -o $@
 
-$(COBJ): %.o: %.c
+$(COBJ): %.o: %.c dip.h
 	$(CC) -c $(DEFINES) $(INC) $(CFLAGS) $< -o $@
 
 $(SOBJ): %.o: %.s
@@ -54,6 +54,9 @@ $(BIN): $(EXECUTABLE)
 
 $(EEP): $(EXECUTABLE)
 	$(CP) -j .eeprom --set-section-flags=.eeprom="alloc,load" --change-section-lma .eeprom=0 -O ihex $^ $@
+
+dip.h: calculate_dip_switch.py
+	python3 $< > $@
 
 clean:
 	rm -f $(OBJ) $(BIN) $(EXECUTABLE) $(COBJ:.o=.d)
