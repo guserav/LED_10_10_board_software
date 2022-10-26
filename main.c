@@ -8,6 +8,8 @@
 
 #include "dip.h"
 
+#define TIME int32_t
+
 // Read from ADC2: PB4; ADC3: PB3
 // LED is on MOSI Pin: PB0
 // Vmid = 4V / (10 + 1.6 ) * 1.6    ~0.552
@@ -28,6 +30,9 @@
 #define ADC_READ_DIP_1 5
 #define ADC_READ_DIP_2 7
 #define ADC_READ_NONE 14
+
+#define STATE_DMX 0
+#define STATE_MANUAL 1
 
 void out_init() {
     // Write on Pin PB0
@@ -66,12 +71,12 @@ void pwm_init() {
     TCCR2A |= B(COM2A1) | B(COM2B1);
 }
 
-volatile uint16_t tot_overflow_5_ms;
+volatile TIME tot_overflow_200_micros;
 // initialize timer, interrupt and variable
-void timer_5ms_init() {
+void timer_100micros_init() {
     // set up timer with prescaler = 8
-    TCCR0B = (1 << CS02);
-    // Normal Timer operations, 0 to MAX
+    // Normal Timer operations, 0 to OCRA
+    TCCR0B = B(CS01);
     TCCR0A = 0;
 
     // initialize counter
@@ -81,12 +86,12 @@ void timer_5ms_init() {
     TIMSK0 |= (1 << TOIE0);
 
     sei();
-    tot_overflow_5_ms = 0;
+    tot_overflow_200_micros = 0;
 }
 
 ISR(TIMER0_OVF_vect) {
     // keep a track of number of overflows
-    tot_overflow_5_ms++;
+    tot_overflow_200_micros++;
 }
 
 void uart_init() {
@@ -130,6 +135,7 @@ led_sig_set(B);
 #define pwm_set_gen(X, R, L) \
 void pwm_set_##X(uint16_t x) { \
     if(x > state.pwm_limit) x = state.pwm_limit; \
+    if(x > RESOLUTION) x = RESOLUTION - 1; \
     if(x != 0) { \
         R = x; \
         TOCPMCOE |= B(L); \
@@ -150,6 +156,7 @@ int16_t read_ADC(uint8_t channel) {
 }
 
 struct state {
+    int8_t state;
     int16_t dmx_frame;
     uint8_t dmx_lock;
     uint8_t flip;
@@ -159,8 +166,9 @@ struct state {
     uint8_t adc_count_limit;
     uint16_t pwm_limit;
     uint8_t pressed_down;
-    uint16_t pressed_time;
+    TIME pressed_time;
 } state = {
+    .state = STATE_DMX,
     .dmx_frame = 0,
     .dmx_lock = 0,
     .flip = 0,
@@ -189,6 +197,8 @@ void process_uart_dmx() {
             state.dmx_frame++;
             if(state.dmx_frame == -1) {
                 // start code in uart_data
+            } else if(state.state != STATE_DMX) {
+                // do nothing
             } else {
                 switch(state.dmx_frame) {
                     case 0:
@@ -216,12 +226,72 @@ void process_uart_dmx() {
     }
 }
 
-void handle_btn_long_press() {
 
+struct anim {
+    int16_t from;
+    int16_t to;
+    TIME t_from;
+    TIME t_to;
+    uint8_t enabled;
+} anim = {
+    .from = 0,
+    .to = 0,
+    .t_from = 0,
+    .t_to = 0,
+    .enabled = 0
+};
+
+void set_current_animation_value() {
+    if(anim.enabled) {
+        TIME diff = anim.t_to - tot_overflow_200_micros;
+        uint16_t set = 0;
+        if(diff < 0) {
+            anim.enabled = 0;
+            set = anim.to;
+        } else {
+            TIME temp = (tot_overflow_200_micros - anim.t_from);
+            temp = temp * (anim.to - anim.from);
+            temp = temp / (anim.t_to - anim.t_from);
+            set = anim.from + temp;
+        }
+        pwm_set_1(set);
+        pwm_set_2(set);
+        pwm_set_3(set);
+        pwm_set_4(set);
+    }
+}
+
+void animate(int16_t from, int16_t to, TIME micros) {
+    anim.from = from;
+    anim.to = to;
+    anim.t_from = tot_overflow_200_micros;
+    anim.t_to = tot_overflow_200_micros + micros;
+    anim.enabled = 1;
+}
+
+uint8_t manual_value = 0;
+void handle_btn_long_press() {
+    switch(state.state) {
+        case STATE_MANUAL:
+            state.state = STATE_DMX;
+            break;
+        case STATE_DMX:
+        default:
+            state.state = STATE_MANUAL;
+            manual_value = 0;
+            animate(0, manual_value, 5000);
+    }
 }
 
 void handle_btn_short_press() {
-
+    if(state.state == STATE_MANUAL) {
+        int16_t new = manual_value + 64;
+        if(new > RESOLUTION) {
+            new = 0;
+        }
+        animate(manual_value, new, 5000);
+        manual_value = new;
+    }
 }
 
 #define OLD_PWM_LIMITS_N 16
@@ -233,23 +303,26 @@ uint16_t old_pwm_limits_acc = 0;
 #endif
 
 void handle_btn_and_temp() {
-    if(state.convert_result < 16) {
+    if(state.convert_result < 16) {  // Low enough value to consider ADC pulled to Ground
         if(state.pressed_down) {
-            state.pressed_down = 2;
+            if (state.pressed_down == 1) {
+                state.pressed_down = 2;
+            } else if(state.pressed_down == 2 && ((tot_overflow_200_micros - state.pressed_time) > 5000)) {
+                state.pressed_down = 3;
+                handle_btn_long_press();
+            }
         } else {
-            state.pressed_time = tot_overflow_5_ms;
+            state.pressed_time = tot_overflow_200_micros;
             state.pressed_down = 1;
-        }
-        if(state.pressed_down == 2 && (tot_overflow_5_ms - state.pressed_time > 1000/5)) {
-            state.pressed_down = 3;
-            handle_btn_long_press();
         }
     } else {
         if(state.pressed_down == 2) {
             handle_btn_short_press();
-
         }
-        state.pressed_down = 0;
+        if(state.pressed_down) {
+            state.pressed_down = 0;
+            return;
+        }
         // LIMIT = y * 1024 / (1 + y)
         // y = 0.4721 = 40 C
 #define TEMP_UPER_LIMIT 329
@@ -290,7 +363,7 @@ int main(void) {
     pwm_init();
     uart_init();
     adc_init();
-    timer_5ms_init();
+    timer_100micros_init();
 
     uint16_t nonce = 0;
 
@@ -347,7 +420,7 @@ int main(void) {
                             UDR1 = state.pwm_limit >> 2;
                             break;
                         case 4:
-                            UDR1 = tot_overflow_5_ms >> 8;
+                            UDR1 = manual_value >> 8;
                             break;
                         case 5:
                             UCSR1B &= ~B(TXEN1);
@@ -356,6 +429,8 @@ int main(void) {
 
                 nonce = ADCW;
                 ADCSRA |= B(ADSC);
+            } else {
+                set_current_animation_value();
             }
         }
     }
