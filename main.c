@@ -8,7 +8,7 @@
 
 #include "dip.h"
 
-#define TIME int32_t
+#define TIME int16_t
 
 // Read from ADC2: PB4; ADC3: PB3
 // LED is on MOSI Pin: PB0
@@ -249,11 +249,12 @@ void set_current_animation_value() {
             anim.enabled = 0;
             set = anim.to;
         } else {
-            TIME temp = (tot_overflow_200_micros - anim.t_from);
+            int32_t temp = (tot_overflow_200_micros - anim.t_from);
             temp = temp * (anim.to - anim.from);
             temp = temp / (anim.t_to - anim.t_from);
             set = anim.from + temp;
         }
+        set = anim.to;
         pwm_set_1(set);
         pwm_set_2(set);
         pwm_set_3(set);
@@ -269,7 +270,7 @@ void animate(int16_t from, int16_t to, TIME micros) {
     anim.enabled = 1;
 }
 
-uint8_t manual_value = 0;
+uint16_t manual_value = 0;
 void handle_btn_long_press() {
     switch(state.state) {
         case STATE_MANUAL:
@@ -285,9 +286,13 @@ void handle_btn_long_press() {
 
 void handle_btn_short_press() {
     if(state.state == STATE_MANUAL) {
-        int16_t new = manual_value + 64;
-        if(new > RESOLUTION) {
+        int16_t new = 0;
+        if(manual_value == 0) {
+            new = 1;
+        } else if (manual_value > RESOLUTION || RESOLUTION == manual_value) {
             new = 0;
+        } else {
+            new = manual_value * 4;
         }
         animate(manual_value, new, 5000);
         manual_value = new;
